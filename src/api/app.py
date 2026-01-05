@@ -1,81 +1,85 @@
-import os                                           # OS utilities for environment variables and file paths
-import time                                         # Time utilities for latency measurement and rate limiting
-import json                                         # JSON handling for structured logging
-import logging                                      # Python logging framework
-import pickle                                       # Used to load the trained ML model
-from collections import defaultdict                 # Dictionary with default values for rate limiting
-from typing import Any, Dict                        # Type hints for better readability and tooling
+import os
+import time
+import json
+import logging
+import pickle
+from collections import defaultdict
+from typing import Any, Dict
 
-import pandas as pd                                 # DataFrame creation for model input
-from dotenv import load_dotenv                      # Load environment variables from .env file
-from fastapi import FastAPI, Request, HTTPException # FastAPI core classes
-from fastapi.responses import Response, JSONResponse # Custom HTTP responses
-from pydantic import BaseModel, Field, ValidationError # Input validation and schema definition
-from prometheus_client import Counter, Histogram, generate_latest # Prometheus metrics
+import pandas as pd
+from dotenv import load_dotenv
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import Response, JSONResponse
+from pydantic import BaseModel, Field, ValidationError
+from prometheus_client import Counter, Histogram, generate_latest
 
 
 # =================================================
 # Environment
 # =================================================
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))  # Project root directory
-ENV_PATH = os.path.join(BASE_DIR, ".env")                               # Path to .env file
-load_dotenv(dotenv_path=ENV_PATH)                                       # Load environment variables
+BASE_DIR = os.path.dirname(
+    os.path.dirname(
+        os.path.dirname(__file__)
+    )
+)
+ENV_PATH = os.path.join(BASE_DIR, ".env")
+load_dotenv(dotenv_path=ENV_PATH)
 
-APP_NAME = os.getenv("APP_NAME", "FastAPI App")                         # Application name
-MODEL_PATH = os.getenv("MODEL_PATH")                                    # Path to trained model file
-RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", 5))          # Max requests per client
-RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", 60))     # Rate limit time window
+APP_NAME = os.getenv("APP_NAME", "FastAPI App")
+MODEL_PATH = os.getenv("MODEL_PATH")
+RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", 5))
+RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", 60))
 
 
 # =================================================
 # Structured JSON logging
 # =================================================
-class JsonFormatter(logging.Formatter):                                  # Custom log formatter
-    def format(self, record: logging.LogRecord) -> str:                  # Override default format method
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
         log_record: Dict[str, Any] = {
-            "timestamp": self.formatTime(record),                        # Log timestamp
-            "level": record.levelname,                                   # Log severity level
-            "service": APP_NAME,                                         # Service name
-            "message": record.getMessage(),                              # Log message content
+            "timestamp": self.formatTime(record),
+            "level": record.levelname,
+            "service": APP_NAME,
+            "message": record.getMessage(),
         }
-        return json.dumps(log_record)                                    # Return structured JSON log
+        return json.dumps(log_record)
 
 
-handler = logging.StreamHandler()                                        # Log output to stdout
-handler.setFormatter(JsonFormatter())                                    # Attach custom JSON formatter
+handler = logging.StreamHandler()
+handler.setFormatter(JsonFormatter())
 
-logger = logging.getLogger(APP_NAME)                                     # Create named logger
-logger.setLevel(logging.INFO)                                            # Set log level
-logger.handlers = [handler]                                              # Replace default handlers
-logger.propagate = False                                                 # Prevent duplicate logs
+logger = logging.getLogger(APP_NAME)
+logger.setLevel(logging.INFO)
+logger.handlers = [handler]
+logger.propagate = False
 
 
 # =================================================
 # Prometheus metrics
 # =================================================
-REQUEST_COUNT = Counter(                                                 # Counts total API requests
+REQUEST_COUNT = Counter(
     "api_requests_total",
     "Total API requests",
     ["method", "endpoint", "status"],
 )
 
-REQUEST_LATENCY = Histogram(                                             # Measures API request latency
+REQUEST_LATENCY = Histogram(
     "api_request_latency_seconds",
     "API request latency",
     ["endpoint"],
 )
 
-PREDICTIONS_TOTAL = Counter(                                             # Counts successful predictions
+PREDICTIONS_TOTAL = Counter(
     "model_predictions_total",
     "Total number of predictions",
 )
 
-PREDICTION_ERRORS_TOTAL = Counter(                                       # Counts prediction failures
+PREDICTION_ERRORS_TOTAL = Counter(
     "model_prediction_errors_total",
     "Total prediction errors",
 )
 
-PREDICTION_LATENCY = Histogram(                                          # Measures prediction time
+PREDICTION_LATENCY = Histogram(
     "model_prediction_latency_seconds",
     "Prediction latency",
 )
@@ -84,30 +88,30 @@ PREDICTION_LATENCY = Histogram(                                          # Measu
 # =================================================
 # Rate limiting storage
 # =================================================
-rate_limit_store = defaultdict(list)                                     # Stores timestamps per client IP
+rate_limit_store = defaultdict(list)
 
 
 # =================================================
 # FastAPI app
 # =================================================
-app = FastAPI(title=APP_NAME)                                             # Initialize FastAPI app
+app = FastAPI(title=APP_NAME)
 
 
 # =================================================
 # Global model
 # =================================================
-model = None                                                             # Global model reference
+model = None
 
 
 # =================================================
 # Mock model (pytest / CI)
 # =================================================
-class MockModel:                                                         # Dummy model for testing
+class MockModel:
     def predict(self, X):
-        return [0]                                                       # Always predict class 0
+        return [0]
 
     def predict_proba(self, X):
-        return [[0.3, 0.7]]                                              # Fixed probability output
+        return [[0.3, 0.7]]
 
 
 # =================================================
@@ -115,27 +119,27 @@ class MockModel:                                                         # Dummy
 # =================================================
 @app.on_event("startup")
 def load_model():
-    global model                                                         # Use global model variable
+    global model
 
-    if os.getenv("PYTEST_CURRENT_TEST"):                                 # Detect pytest environment
+    if os.getenv("PYTEST_CURRENT_TEST"):
         logger.info("pytest detected – using MockModel")
-        model = MockModel()                                              # Inject mock model
+        model = MockModel()
         return
 
-    if not MODEL_PATH:                                                   # If model path not configured
+    if not MODEL_PATH:
         logger.warning("MODEL_PATH not set – API running without model")
         return
 
-    model_path = os.path.join(BASE_DIR, MODEL_PATH)                      # Full model file path
+    model_path = os.path.join(BASE_DIR, MODEL_PATH)
 
-    if not os.path.exists(model_path):                                   # Check model existence
-        logger.warning(f"Model file not found at {model_path}")
+    if not os.path.exists(model_path):
+        logger.warning("Model file not found at %s", model_path)
         return
 
-    with open(model_path, "rb") as f:                                    # Open model file
-        model = pickle.load(f)                                           # Deserialize trained model
+    with open(model_path, "rb") as file:
+        model = pickle.load(file)
 
-    logger.info("Model loaded successfully")                             # Confirm model load
+    logger.info("Model loaded successfully")
 
 
 # =================================================
@@ -143,31 +147,35 @@ def load_model():
 # =================================================
 @app.middleware("http")
 async def log_and_metrics(request: Request, call_next):
-    start_time = time.time()                                             # Start timer
-    response = await call_next(request)                                  # Process request
-    duration = time.time() - start_time                                  # Compute latency
+    start_time = time.time()
+    response = await call_next(request)
+    duration = time.time() - start_time
 
-    REQUEST_COUNT.labels(                                                # Increment request counter
+    REQUEST_COUNT.labels(
         method=request.method,
         endpoint=request.url.path,
         status=str(response.status_code),
     ).inc()
 
-    REQUEST_LATENCY.labels(endpoint=request.url.path).observe(duration) # Record latency
+    REQUEST_LATENCY.labels(
+        endpoint=request.url.path
+    ).observe(duration)
 
-    logger.info(                                                         # Structured request log
-        f"{request.method} {request.url.path} "
-        f"status={response.status_code} "
-        f"latency={duration:.4f}s"
+    logger.info(
+        "%s %s status=%s latency=%.4fs",
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration,
     )
 
-    return response                                                      # Return HTTP response
+    return response
 
 
 # =================================================
 # Input schema
 # =================================================
-class HeartInput(BaseModel):                                             # Input validation schema
+class HeartInput(BaseModel):
     age: int = Field(..., ge=1, le=120)
     sex: int = Field(..., ge=0, le=1)
     cp: int = Field(..., ge=0, le=3)
@@ -188,7 +196,7 @@ class HeartInput(BaseModel):                                             # Input
 # =================================================
 @app.get("/")
 def health():
-    return {"status": "ok"}                                             # Simple health response
+    return {"status": "ok"}
 
 
 # =================================================
@@ -196,52 +204,60 @@ def health():
 # =================================================
 @app.post("/predict")
 async def predict(request: Request):
-    global model                                                         # Access global model
-    start_time = time.time()                                             # Start prediction timer
+    global model
+    start_time = time.time()
 
-    client_ip = request.client.host                                      # Extract client IP
-    now = time.time()                                                    # Current timestamp
+    client_ip = request.client.host
+    now = time.time()
 
-    # -------- Rate limiting --------
     rate_limit_store[client_ip] = [
         t for t in rate_limit_store[client_ip]
-        if now - t < RATE_LIMIT_WINDOW                                   # Keep only recent requests
+        if now - t < RATE_LIMIT_WINDOW
     ]
 
-    if len(rate_limit_store[client_ip]) >= RATE_LIMIT_REQUESTS:          # Check rate limit
+    if len(rate_limit_store[client_ip]) >= RATE_LIMIT_REQUESTS:
         PREDICTION_ERRORS_TOTAL.inc()
-        raise HTTPException(status_code=429, detail="rate_limit_exceeded")
+        raise HTTPException(
+            status_code=429,
+            detail="rate_limit_exceeded",
+        )
 
-    rate_limit_store[client_ip].append(now)                              # Store current request time
+    rate_limit_store[client_ip].append(now)
 
-    # -------- Validation --------
     try:
-        body = await request.json()                                      # Parse JSON body
-        data = HeartInput(**body)                                        # Validate input schema
+        body = await request.json()
+        data = HeartInput(**body)
     except ValidationError as exc:
         PREDICTION_ERRORS_TOTAL.inc()
-        return JSONResponse(status_code=422, content={"details": exc.errors()})
+        return JSONResponse(
+            status_code=422,
+            content={"details": exc.errors()},
+        )
     except Exception:
         PREDICTION_ERRORS_TOTAL.inc()
-        return JSONResponse(status_code=400, content={"error": "invalid_json"})
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_json"},
+        )
 
-    # -------- ✅ LAZY MOCK INJECTION (FINAL FIX) --------
     if model is None and os.getenv("PYTEST_CURRENT_TEST"):
         logger.info("Injecting MockModel lazily during pytest")
-        model = MockModel()                                              # Inject mock if needed
+        model = MockModel()
 
     if model is None:
         PREDICTION_ERRORS_TOTAL.inc()
-        raise HTTPException(status_code=503, detail="model_not_loaded")
+        raise HTTPException(
+            status_code=503,
+            detail="model_not_loaded",
+        )
 
-    # -------- Prediction --------
     try:
-        df = pd.DataFrame([data.model_dump()])                            # Convert input to DataFrame
-        pred = int(model.predict(df)[0])                                 # Get predicted class
-        prob = float(model.predict_proba(df)[0][1])                      # Get probability score
+        df = pd.DataFrame([data.model_dump()])
+        pred = int(model.predict(df)[0])
+        prob = float(model.predict_proba(df)[0][1])
 
-        PREDICTIONS_TOTAL.inc()                                          # Increment success counter
-        PREDICTION_LATENCY.observe(time.time() - start_time)             # Record prediction latency
+        PREDICTIONS_TOTAL.inc()
+        PREDICTION_LATENCY.observe(time.time() - start_time)
 
         logger.info(
             json.dumps(
@@ -261,7 +277,10 @@ async def predict(request: Request):
     except Exception:
         PREDICTION_ERRORS_TOTAL.inc()
         logger.exception("Prediction failed")
-        raise HTTPException(status_code=500, detail="prediction_failed")
+        raise HTTPException(
+            status_code=500,
+            detail="prediction_failed",
+        )
 
 
 # =================================================
@@ -269,4 +288,7 @@ async def predict(request: Request):
 # =================================================
 @app.get("/metrics")
 def metrics():
-    return Response(generate_latest(), media_type="text/plain")          # Expose Prometheus metrics
+    return Response(
+        generate_latest(),
+        media_type="text/plain",
+    )
