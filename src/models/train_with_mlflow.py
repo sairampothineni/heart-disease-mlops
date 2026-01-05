@@ -1,6 +1,5 @@
 import os
 import pandas as pd
-import numpy as np
 import mlflow
 import mlflow.sklearn
 import matplotlib.pyplot as plt
@@ -22,7 +21,7 @@ from sklearn.metrics import (
 )
 
 # ---------------------------------------------------
-# 1. Paths & MLflow configuration
+# Paths & MLflow configuration (SAFE at module level)
 # ---------------------------------------------------
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
@@ -40,112 +39,126 @@ MLRUNS_DIR = os.path.join(BASE_DIR, "mlruns")
 mlflow.set_tracking_uri(f"file:///{MLRUNS_DIR}")
 mlflow.set_experiment("Heart Disease Classification")
 
-# ---------------------------------------------------
-# 2. Load dataset
-# ---------------------------------------------------
-
-df = pd.read_csv(DATA_PATH)
-
-X = df.drop("target", axis=1)
-y = df["target"]
-
-categorical_features = X.select_dtypes(include=["object", "category"]).columns
-numerical_features = X.select_dtypes(include=["int64", "float64"]).columns
 
 # ---------------------------------------------------
-# 3. Preprocessing
+# Main function
 # ---------------------------------------------------
 
-preprocessor = ColumnTransformer(
-    transformers=[
-        ("num", StandardScaler(), numerical_features),
-        ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_features)
-    ]
-)
+def main():
 
-# ---------------------------------------------------
-# 4. Train-test split
-# ---------------------------------------------------
+    # ---------------------------------------------------
+    # Load dataset
+    # ---------------------------------------------------
+    df = pd.read_csv(DATA_PATH)
 
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y
-)
+    X = df.drop("target", axis=1)
+    y = df["target"]
 
-# ---------------------------------------------------
-# 5. Models
-# ---------------------------------------------------
+    categorical_features = X.select_dtypes(
+        include=["object", "category"]
+    ).columns
 
-models = {
-    "Logistic Regression (ElasticNet)": LogisticRegression(
-        solver="saga",
-        penalty="elasticnet",
-        l1_ratio=0.5,
-        C=0.1,
-        max_iter=5000,
-        random_state=42
-    ),
-    "Random Forest": RandomForestClassifier(
-        n_estimators=200,
-        max_depth=5,
-        min_samples_split=5,
-        random_state=42,
-        n_jobs=1  # IMPORTANT: avoids Windows memory / joblib crash
+    numerical_features = X.select_dtypes(
+        include=["int64", "float64"]
+    ).columns
+
+    # ---------------------------------------------------
+    # Preprocessing
+    # ---------------------------------------------------
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", StandardScaler(), numerical_features),
+            ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_features)
+        ]
     )
-}
+
+    # ---------------------------------------------------
+    # Train-test split
+    # ---------------------------------------------------
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+
+    # ---------------------------------------------------
+    # Models
+    # ---------------------------------------------------
+    models = {
+        "Logistic Regression (ElasticNet)": LogisticRegression(
+            solver="saga",
+            penalty="elasticnet",
+            l1_ratio=0.5,
+            C=0.1,
+            max_iter=5000,
+            random_state=42
+        ),
+        "Random Forest": RandomForestClassifier(
+            n_estimators=200,
+            max_depth=5,
+            min_samples_split=5,
+            random_state=42,
+            n_jobs=1  # Windows-safe
+        )
+    }
+
+    # ---------------------------------------------------
+    # Training + MLflow logging
+    # ---------------------------------------------------
+    for model_name, model in models.items():
+
+        with mlflow.start_run(run_name=model_name):
+
+            pipeline = Pipeline(
+                steps=[
+                    ("preprocessor", preprocessor),
+                    ("classifier", model)
+                ]
+            )
+
+            pipeline.fit(X_train, y_train)
+
+            y_pred = pipeline.predict(X_test)
+            y_proba = pipeline.predict_proba(X_test)[:, 1]
+
+            metrics = {
+                "accuracy": accuracy_score(y_test, y_pred),
+                "precision": precision_score(y_test, y_pred),
+                "recall": recall_score(y_test, y_pred),
+                "f1_score": f1_score(y_test, y_pred),
+                "roc_auc": roc_auc_score(y_test, y_proba)
+            }
+
+            mlflow.log_metrics(metrics)
+            mlflow.log_params(model.get_params())
+
+            # ---------------------------------------------------
+            # Confusion matrix plot
+            # ---------------------------------------------------
+            cm = confusion_matrix(y_test, y_pred)
+            disp = ConfusionMatrixDisplay(cm)
+
+            fig, ax = plt.subplots(figsize=(5, 5))
+            disp.plot(ax=ax)
+            plt.title(model_name)
+
+            cm_path = f"confusion_matrix_{model_name.replace(' ', '_')}.png"
+            plt.savefig(cm_path)
+            mlflow.log_artifact(cm_path)
+            plt.close()
+
+            # ---------------------------------------------------
+            # Log model (no warning)
+            # ---------------------------------------------------
+            mlflow.sklearn.log_model(
+                sk_model=pipeline,
+                name="model"
+            )
+
+            print(f"\n{model_name} logged successfully")
+            print("Metrics:", metrics)
+
 
 # ---------------------------------------------------
-# 6. Training + MLflow logging
+# Entry point (CRITICAL FIX)
 # ---------------------------------------------------
-
-for model_name, model in models.items():
-
-    with mlflow.start_run(run_name=model_name):
-
-        pipeline = Pipeline(
-            steps=[
-                ("preprocessor", preprocessor),
-                ("classifier", model)
-            ]
-        )
-
-        pipeline.fit(X_train, y_train)
-
-        y_pred = pipeline.predict(X_test)
-        y_proba = pipeline.predict_proba(X_test)[:, 1]
-
-        metrics = {
-            "accuracy": accuracy_score(y_test, y_pred),
-            "precision": precision_score(y_test, y_pred),
-            "recall": recall_score(y_test, y_pred),
-            "f1_score": f1_score(y_test, y_pred),
-            "roc_auc": roc_auc_score(y_test, y_proba)
-        }
-
-        mlflow.log_metrics(metrics)
-        mlflow.log_params(model.get_params())
-
-        # ---------------------------------------------------
-        # Confusion matrix plot
-        # ---------------------------------------------------
-        cm = confusion_matrix(y_test, y_pred)
-        disp = ConfusionMatrixDisplay(cm)
-
-        fig, ax = plt.subplots(figsize=(5, 5))
-        disp.plot(ax=ax)
-        plt.title(model_name)
-
-        cm_path = f"confusion_matrix_{model_name.replace(' ', '_')}.png"
-        plt.savefig(cm_path)
-        mlflow.log_artifact(cm_path)
-        plt.close()
-
-        # ---------------------------------------------------
-        # Log model (FIXED – NO WARNING)
-        # ---------------------------------------------------
-        mlflow.sklearn.log_model(
-            sk_model=pipeline,
-            name="model"
-        )
-
-        print(f"\n{model_name} logged successfully")
-        print("Metrics:", metrics)
+if __name__ == "__main__":
+    main()

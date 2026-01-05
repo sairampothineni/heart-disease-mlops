@@ -138,6 +138,7 @@ rf_grid.fit(X_train, y_train)
 # 9. EVALUATION FUNCTION
 # ===============================
 
+
 def evaluate(model):
     y_pred = model.predict(X_test)
     y_prob = model.predict_proba(X_test)[:, 1]
@@ -149,6 +150,7 @@ def evaluate(model):
         "f1_score": f1_score(y_test, y_pred),
         "roc_auc": roc_auc_score(y_test, y_prob)
     }
+
 
 # ===============================
 # 10. RESULTS

@@ -17,127 +17,123 @@ from sklearn.metrics import (
     roc_auc_score
 )
 
+
 # ------------------------------------------------------------------
-# Progress helper (ADDED)
+# Progress helper
 # ------------------------------------------------------------------
+
+
 def log_step(message):
     print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
+
 
 # ------------------------------------------------------------------
 # Paths
 # ------------------------------------------------------------------
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 DATA_PATH = os.path.join(
     BASE_DIR, "notebooks", "data", "processed", "heart_disease_cleaned.csv"
 )
 MODEL_PATH = os.path.join(BASE_DIR, "models", "random_forest_pipeline.pkl")
+TARGET_COL = "target"
 
 os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
 
-# ------------------------------------------------------------------
-# Start
-# ------------------------------------------------------------------
-log_step("Starting Random Forest training with preprocessing pipeline")
 
 # ------------------------------------------------------------------
-# Load dataset
+# ✅ build_pipeline (USED BY PYTEST)
 # ------------------------------------------------------------------
-log_step("Loading dataset...")
-df = pd.read_csv(DATA_PATH)
-log_step(f"Dataset loaded with shape {df.shape}")
+
+
+def build_pipeline(X: pd.DataFrame) -> Pipeline:
+    """
+    Build and return a Random Forest pipeline.
+    This function is SAFE to import in tests.
+    """
+
+    categorical_cols = X.select_dtypes(
+        include=["object", "category"]
+    ).columns.tolist()
+    numerical_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", StandardScaler(), numerical_cols),
+            ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_cols),
+        ]
+    )
+
+    model = RandomForestClassifier(
+        n_estimators=200,
+        max_depth=5,
+        min_samples_split=5,
+        random_state=42,
+        n_jobs=1
+    )
+
+    pipeline = Pipeline(
+        steps=[
+            ("preprocessor", preprocessor),
+            ("classifier", model),
+        ]
+    )
+
+    return pipeline
+
 
 # ------------------------------------------------------------------
-# Split features & target
+# Main execution (NOT run during tests)
 # ------------------------------------------------------------------
-TARGET_COL = "target"
-X = df.drop(columns=[TARGET_COL])
-y = df[TARGET_COL]
 
-log_step("Splitting data into train and test sets...")
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y
-)
-log_step("Train-test split completed")
 
-# ------------------------------------------------------------------
-# Identify column types
-# ------------------------------------------------------------------
-categorical_cols = X.select_dtypes(include=["object", "category"]).columns.tolist()
-numerical_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+def main():
 
-log_step(f"Numerical features: {len(numerical_cols)}")
-log_step(f"Categorical features: {len(categorical_cols)}")
+    log_step("Starting Random Forest training with preprocessing pipeline")
 
-# ------------------------------------------------------------------
-# Preprocessing pipeline
-# ------------------------------------------------------------------
-log_step("Creating preprocessing pipeline...")
-preprocessor = ColumnTransformer(
-    transformers=[
-        ("num", StandardScaler(), numerical_cols),
-        ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_cols),
-    ]
-)
-log_step("Preprocessing pipeline ready")
+    log_step("Loading dataset...")
+    df = pd.read_csv(DATA_PATH)
+    log_step(f"Dataset loaded with shape {df.shape}")
 
-# ------------------------------------------------------------------
-# Model pipeline
-# ------------------------------------------------------------------
-log_step("Initializing Random Forest model...")
-rf_model = RandomForestClassifier(
-    n_estimators=200,
-    max_depth=5,
-    min_samples_split=5,
-    random_state=42,
-    n_jobs=-1
-)
+    X = df.drop(columns=[TARGET_COL])
+    y = df[TARGET_COL]
 
-pipeline = Pipeline(
-    steps=[
-        ("preprocessor", preprocessor),
-        ("classifier", rf_model),
-    ]
-)
+    log_step("Splitting data...")
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
 
-log_step("Model pipeline constructed")
+    pipeline = build_pipeline(X_train)
+
+    log_step("Training model...")
+    pipeline.fit(X_train, y_train)
+
+    log_step("Evaluating model...")
+    y_pred = pipeline.predict(X_test)
+    y_proba = pipeline.predict_proba(X_test)[:, 1]
+
+    metrics = {
+        "accuracy": accuracy_score(y_test, y_pred),
+        "precision": precision_score(y_test, y_pred),
+        "recall": recall_score(y_test, y_pred),
+        "f1_score": f1_score(y_test, y_pred),
+        "roc_auc": roc_auc_score(y_test, y_proba),
+    }
+
+    for key, value in metrics.items():
+        log_step(f"{key}: {value:.4f}")
+
+    log_step("Saving model...")
+    with open(MODEL_PATH, "wb") as f:
+        pickle.dump(pipeline, f)
+
+    log_step(f"Model saved at {MODEL_PATH}")
+    log_step("Training completed successfully")
+
 
 # ------------------------------------------------------------------
-# Training
+# Entry point
 # ------------------------------------------------------------------
-log_step("Training Random Forest model (this may take some time)...")
-pipeline.fit(X_train, y_train)
-log_step("Model training completed")
 
-# ------------------------------------------------------------------
-# Evaluation
-# ------------------------------------------------------------------
-log_step("Evaluating model...")
-y_pred = pipeline.predict(X_test)
-y_proba = pipeline.predict_proba(X_test)[:, 1]
-
-metrics = {
-    "accuracy": accuracy_score(y_test, y_pred),
-    "precision": precision_score(y_test, y_pred),
-    "recall": recall_score(y_test, y_pred),
-    "f1_score": f1_score(y_test, y_pred),
-    "roc_auc": roc_auc_score(y_test, y_proba),
-}
-
-for k, v in metrics.items():
-    log_step(f"{k}: {v:.4f}")
-
-log_step("Evaluation completed")
-
-# ------------------------------------------------------------------
-# Save model (pickle)
-# ------------------------------------------------------------------
-log_step("Saving trained pipeline using pickle...")
-with open(MODEL_PATH, "wb") as f:
-    pickle.dump(pipeline, f)
-
-log_step(f"Model saved successfully at: {MODEL_PATH}")
-
-# ------------------------------------------------------------------
-# End
-# ------------------------------------------------------------------
-log_step("Random Forest training pipeline completed successfully")
+if __name__ == "__main__":
+    main()
