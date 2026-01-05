@@ -2,18 +2,18 @@ import os
 import time
 import logging
 import pickle
-import pandas as pd
+from collections import defaultdict
 
+import pandas as pd
+from dotenv import load_dotenv
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 from prometheus_client import Counter, Histogram, generate_latest
-from dotenv import load_dotenv
-from collections import defaultdict
 
 
 # -------------------------------------------------
-# Load environment variables (FIXED FOR WINDOWS)
+# Load environment variables (SAFE FOR CI & TESTS)
 # -------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 ENV_PATH = os.path.join(BASE_DIR, ".env")
@@ -23,14 +23,6 @@ APP_NAME = os.getenv("APP_NAME", "FastAPI App")
 MODEL_PATH = os.getenv("MODEL_PATH")
 RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", 5))
 RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", 60))
-
-if not MODEL_PATH:
-    raise RuntimeError("MODEL_PATH not set in environment variables")
-
-MODEL_PATH = os.path.join(BASE_DIR, MODEL_PATH)
-
-if not os.path.exists(MODEL_PATH):
-    raise RuntimeError(f"Model file not found at: {MODEL_PATH}")
 
 
 # -------------------------------------------------
@@ -49,13 +41,13 @@ logger = logging.getLogger(APP_NAME)
 REQUEST_COUNT = Counter(
     "api_requests_total",
     "Total API requests",
-    ["method", "endpoint", "status"]
+    ["method", "endpoint", "status"],
 )
 
 REQUEST_LATENCY = Histogram(
     "api_request_latency_seconds",
     "API request latency",
-    ["endpoint"]
+    ["endpoint"],
 )
 
 
@@ -69,6 +61,35 @@ rate_limit_store = defaultdict(list)
 # FastAPI app
 # -------------------------------------------------
 app = FastAPI(title=APP_NAME)
+
+
+# -------------------------------------------------
+# Global model (loaded on startup)
+# -------------------------------------------------
+model = None
+
+
+# -------------------------------------------------
+# Startup: Load model safely
+# -------------------------------------------------
+@app.on_event("startup")
+def load_model():
+    global model
+
+    if not MODEL_PATH:
+        logger.warning("MODEL_PATH not set – API running without model")
+        return
+
+    model_path = os.path.join(BASE_DIR, MODEL_PATH)
+
+    if not os.path.exists(model_path):
+        logger.warning(f"Model file not found at {model_path}")
+        return
+
+    with open(model_path, "rb") as f:
+        model = pickle.load(f)
+
+    logger.info("Model loaded successfully")
 
 
 # -------------------------------------------------
@@ -89,21 +110,12 @@ async def log_and_metrics(request: Request, call_next):
     REQUEST_COUNT.labels(
         method=request.method,
         endpoint=request.url.path,
-        status=str(response.status_code)
+        status=str(response.status_code),
     ).inc()
 
-    REQUEST_LATENCY.labels(
-        endpoint=request.url.path
-    ).observe(duration)
+    REQUEST_LATENCY.labels(endpoint=request.url.path).observe(duration)
 
     return response
-
-
-# -------------------------------------------------
-# Load trained model
-# -------------------------------------------------
-with open(MODEL_PATH, "rb") as f:
-    model = pickle.load(f)
 
 
 # -------------------------------------------------
@@ -138,6 +150,15 @@ def health():
 # -------------------------------------------------
 @app.post("/predict")
 async def predict(request: Request):
+    if model is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "model_not_loaded",
+                "message": "Model not loaded yet",
+            },
+        )
+
     client_ip = request.client.host
     now = time.time()
 
@@ -153,8 +174,11 @@ async def predict(request: Request):
             status_code=429,
             detail={
                 "error": "rate_limit_exceeded",
-                "message": f"Max {RATE_LIMIT_REQUESTS} requests per {RATE_LIMIT_WINDOW} seconds"
-            }
+                "message": (
+                    f"Max {RATE_LIMIT_REQUESTS} requests "
+                    f"per {RATE_LIMIT_WINDOW} seconds"
+                ),
+            },
         )
 
     rate_limit_store[client_ip].append(now)
@@ -163,14 +187,14 @@ async def predict(request: Request):
     try:
         body = await request.json()
         data = HeartInput(**body)
-    except ValidationError as e:
-        logger.warning(f"Validation ERROR | IP={client_ip} | {e.errors()}")
+    except ValidationError as exc:
+        logger.warning(f"Validation ERROR | IP={client_ip} | {exc.errors()}")
         return JSONResponse(
             status_code=422,
             content={
                 "error": "validation_error",
-                "details": e.errors()
-            }
+                "details": exc.errors(),
+            },
         )
     except Exception:
         logger.warning(f"Invalid JSON | IP={client_ip}")
@@ -178,23 +202,24 @@ async def predict(request: Request):
             status_code=400,
             content={
                 "error": "invalid_json",
-                "message": "Request body must be valid JSON"
-            }
+                "message": "Request body must be valid JSON",
+            },
         )
 
     # -------- Prediction --------
     try:
-        df = pd.DataFrame([data.dict()])
+        df = pd.DataFrame([data.model_dump()])
         pred = int(model.predict(df)[0])
         prob = float(model.predict_proba(df)[0][1])
 
         logger.info(
-            f"Prediction SUCCESS | IP={client_ip} | pred={pred} | prob={prob:.4f}"
+            f"Prediction SUCCESS | IP={client_ip} | "
+            f"pred={pred} | prob={prob:.4f}"
         )
 
         return {
             "prediction": pred,
-            "confidence": round(prob, 4)
+            "confidence": round(prob, 4),
         }
 
     except Exception:
@@ -203,8 +228,8 @@ async def predict(request: Request):
             status_code=500,
             detail={
                 "error": "prediction_failed",
-                "message": "Internal model error"
-            }
+                "message": "Internal model error",
+            },
         )
 
 
@@ -213,7 +238,4 @@ async def predict(request: Request):
 # -------------------------------------------------
 @app.get("/metrics")
 def metrics():
-    return Response(
-        generate_latest(),
-        media_type="text/plain"
-    )
+    return Response(generate_latest(), media_type="text/plain")
