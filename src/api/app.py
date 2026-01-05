@@ -150,15 +150,6 @@ def health():
 # -------------------------------------------------
 @app.post("/predict")
 async def predict(request: Request):
-    if model is None:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "model_not_loaded",
-                "message": "Model not loaded yet",
-            },
-        )
-
     client_ip = request.client.host
     now = time.time()
 
@@ -183,7 +174,7 @@ async def predict(request: Request):
 
     rate_limit_store[client_ip].append(now)
 
-    # -------- JSON + validation --------
+    # -------- JSON + validation (FIRST) --------
     try:
         body = await request.json()
         data = HeartInput(**body)
@@ -203,6 +194,16 @@ async def predict(request: Request):
             content={
                 "error": "invalid_json",
                 "message": "Request body must be valid JSON",
+            },
+        )
+
+    # -------- Model availability (AFTER validation) --------
+    if model is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "model_not_loaded",
+                "message": "Model not loaded yet",
             },
         )
 
