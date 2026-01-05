@@ -42,6 +42,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(APP_NAME)
 
+
 # -------------------------------------------------
 # Prometheus metrics
 # -------------------------------------------------
@@ -57,15 +58,18 @@ REQUEST_LATENCY = Histogram(
     ["endpoint"]
 )
 
+
 # -------------------------------------------------
 # Rate limiting storage (in-memory)
 # -------------------------------------------------
 rate_limit_store = defaultdict(list)
 
+
 # -------------------------------------------------
 # FastAPI app
 # -------------------------------------------------
 app = FastAPI(title=APP_NAME)
+
 
 # -------------------------------------------------
 # Middleware: logging + metrics
@@ -94,11 +98,13 @@ async def log_and_metrics(request: Request, call_next):
 
     return response
 
+
 # -------------------------------------------------
 # Load trained model
 # -------------------------------------------------
 with open(MODEL_PATH, "rb") as f:
     model = pickle.load(f)
+
 
 # -------------------------------------------------
 # Input schema with validation
@@ -118,12 +124,14 @@ class HeartInput(BaseModel):
     ca: int = Field(..., ge=0, le=4)
     thal: int = Field(..., ge=0, le=3)
 
+
 # -------------------------------------------------
 # Health check
 # -------------------------------------------------
 @app.get("/")
 def health():
     return {"status": "API is running"}
+
 
 # -------------------------------------------------
 # Prediction endpoint with rate limiting
@@ -189,7 +197,7 @@ async def predict(request: Request):
             "confidence": round(prob, 4)
         }
 
-    except Exception as e:
+    except Exception:
         logger.exception("Prediction FAILURE")
         raise HTTPException(
             status_code=500,
@@ -198,6 +206,7 @@ async def predict(request: Request):
                 "message": "Internal model error"
             }
         )
+
 
 # -------------------------------------------------
 # Prometheus metrics endpoint
