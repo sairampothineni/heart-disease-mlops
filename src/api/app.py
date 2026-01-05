@@ -64,13 +64,13 @@ app = FastAPI(title=APP_NAME)
 
 
 # -------------------------------------------------
-# Global model (loaded on startup)
+# Global model (loaded on startup OR lazily)
 # -------------------------------------------------
 model = None
 
 
 # -------------------------------------------------
-# ✅ Mock model for pytest / CI
+# Mock model for pytest / CI
 # -------------------------------------------------
 class MockModel:
     def predict(self, X):
@@ -81,17 +81,11 @@ class MockModel:
 
 
 # -------------------------------------------------
-# Startup: Load model safely
+# Startup: Load real model (production)
 # -------------------------------------------------
 @app.on_event("startup")
 def load_model():
     global model
-
-    # ✅ IMPORTANT: Use mock model during pytest
-    if os.getenv("PYTEST_CURRENT_TEST"):
-        logger.info("Running under pytest – loading MockModel")
-        model = MockModel()
-        return
 
     if not MODEL_PATH:
         logger.warning("MODEL_PATH not set – API running without model")
@@ -136,7 +130,7 @@ async def log_and_metrics(request: Request, call_next):
 
 
 # -------------------------------------------------
-# Input schema with validation
+# Input schema
 # -------------------------------------------------
 class HeartInput(BaseModel):
     age: int = Field(..., ge=1, le=120)
@@ -163,10 +157,12 @@ def health():
 
 
 # -------------------------------------------------
-# Prediction endpoint with rate limiting
+# Prediction endpoint
 # -------------------------------------------------
 @app.post("/predict")
 async def predict(request: Request):
+    global model
+
     client_ip = request.client.host
     now = time.time()
 
@@ -177,7 +173,6 @@ async def predict(request: Request):
     ]
 
     if len(rate_limit_store[client_ip]) >= RATE_LIMIT_REQUESTS:
-        logger.warning(f"Rate limit exceeded | IP={client_ip}")
         raise HTTPException(
             status_code=429,
             detail={
@@ -196,7 +191,6 @@ async def predict(request: Request):
         body = await request.json()
         data = HeartInput(**body)
     except ValidationError as exc:
-        logger.warning(f"Validation ERROR | IP={client_ip} | {exc.errors()}")
         return JSONResponse(
             status_code=422,
             content={
@@ -205,7 +199,6 @@ async def predict(request: Request):
             },
         )
     except Exception:
-        logger.warning(f"Invalid JSON | IP={client_ip}")
         return JSONResponse(
             status_code=400,
             content={
@@ -214,7 +207,11 @@ async def predict(request: Request):
             },
         )
 
-    # -------- Model availability AFTER validation --------
+    # -------- ✅ LAZY MOCK INJECTION (KEY FIX) --------
+    if model is None and os.getenv("PYTEST_CURRENT_TEST"):
+        logger.info("Injecting MockModel during pytest")
+        model = MockModel()
+
     if model is None:
         raise HTTPException(
             status_code=503,
@@ -225,30 +222,14 @@ async def predict(request: Request):
         )
 
     # -------- Prediction --------
-    try:
-        df = pd.DataFrame([data.model_dump()])
-        pred = int(model.predict(df)[0])
-        prob = float(model.predict_proba(df)[0][1])
+    df = pd.DataFrame([data.model_dump()])
+    pred = int(model.predict(df)[0])
+    prob = float(model.predict_proba(df)[0][1])
 
-        logger.info(
-            f"Prediction SUCCESS | IP={client_ip} | "
-            f"pred={pred} | prob={prob:.4f}"
-        )
-
-        return {
-            "prediction": pred,
-            "confidence": round(prob, 4),
-        }
-
-    except Exception:
-        logger.exception("Prediction FAILURE")
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "prediction_failed",
-                "message": "Internal model error",
-            },
-        )
+    return {
+        "prediction": pred,
+        "confidence": round(prob, 4),
+    }
 
 
 # -------------------------------------------------
