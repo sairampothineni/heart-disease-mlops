@@ -1,26 +1,26 @@
-groups:
-- name: heart-disease-api-alerts
-  rules:
+groups:                                         # Top-level list of alert rule groups
+- name: heart-disease-api-alerts                # Name of the alert group for the Heart Disease API
+  rules:                                       # List of alerting rules inside this group
 
-  - alert: HighLatency
-    expr: histogram_quantile(
-            0.95,
-            sum by (le)(
-              rate(api_request_latency_seconds_bucket[5m])
+  - alert: HighLatency                          # Name of the alert for high API latency
+    expr: histogram_quantile(                  # Calculates a quantile (percentile) from histogram metrics
+            0.95,                               # 95th percentile latency
+            sum by (le)(                        # Aggregates histogram buckets by upper bound (le)
+              rate(api_request_latency_seconds_bucket[5m])  # Per-second rate of request latency over last 5 minutes
             )
-          ) > 1
-    for: 2m
+          ) > 1                                 # Triggers alert if latency exceeds 1 second
+    for: 2m                                    # Condition must hold true continuously for 2 minutes
     labels:
-      severity: warning
+      severity: warning                         # Alert severity level (used by Alertmanager)
     annotations:
-      summary: "High API latency"
-      description: "95th percentile latency is above 1 second"
+      summary: "High API latency"               # Short human-readable alert summary
+      description: "95th percentile latency is above 1 second"  # Detailed alert description
 
-  - alert: HighErrorRate
-    expr: rate(api_requests_total{status=~"5.."}[2m]) > 0.05
-    for: 1m
+  - alert: HighErrorRate                        # Name of the alert for high server error rate
+    expr: rate(api_requests_total{status=~"5.."}[2m]) > 0.05  # Rate of 5xx responses over last 2 minutes
+    for: 1m                                    # Condition must persist for 1 minute before firing
     labels:
-      severity: critical
+      severity: critical                        # Critical severity indicating serious issue
     annotations:
-      summary: "High error rate"
-      description: "API is returning too many 5xx errors"
+      summary: "High error rate"                # Short alert summary
+      description: "API is returning too many 5xx errors"  # Detailed explanation of the alert

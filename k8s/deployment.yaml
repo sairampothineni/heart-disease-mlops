@@ -1,20 +1,62 @@
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: apps/v1                      # Specifies the Kubernetes API version for Deployments
+kind: Deployment                         # Defines this resource as a Deployment
 metadata:
-  name: heart-disease-api
+  name: heart-disease-api               # Name of the Deployment resource
+  labels:
+    app: heart-disease-api              # Label used to identify this application
 spec:
-  replicas: 1
+  replicas: 2                           # Number of pod replicas to run for high availability
   selector:
     matchLabels:
-      app: heart-disease-api
+      app: heart-disease-api            # Selector to match pods with this label
   template:
     metadata:
       labels:
-        app: heart-disease-api
+        app: heart-disease-api          # Label applied to pods created by this Deployment
     spec:
       containers:
-        - name: heart-disease-api
-          image: heart-disease-api:latest
-          imagePullPolicy: IfNotPresent
+        - name: api                     # Name of the container inside the pod
+          image: your-dockerhub-username/heart-disease-api:latest  # Docker image to run
+          imagePullPolicy: Always       # Always pull the latest image from the registry
+
           ports:
-            - containerPort: 8000
+            - containerPort: 8000       # Port on which the container listens
+
+          env:
+            - name: APP_NAME             # Environment variable for application name
+              value: "Heart Disease Prediction API"
+            - name: MODEL_PATH           # Path to the trained ML model inside the container
+              value: "models/random_forest_pipeline.pkl"
+            - name: RATE_LIMIT_REQUESTS  # Maximum allowed requests per time window
+              value: "5"
+            - name: RATE_LIMIT_WINDOW_SECONDS  # Time window (in seconds) for rate limiting
+              value: "60"
+
+          # ✅ Liveness probe (is app alive?)
+          livenessProbe:
+            httpGet:
+              path: /                   # Endpoint Kubernetes calls to check app health
+              port: 8000                # Port used for the health check
+            initialDelaySeconds: 20     # Wait time before first liveness check
+            periodSeconds: 15           # Interval between liveness checks
+            timeoutSeconds: 2           # Timeout for each liveness probe request
+            failureThreshold: 3         # Restart container after 3 consecutive failures
+
+          # ✅ Readiness probe (can receive traffic?)
+          readinessProbe:
+            httpGet:
+              path: /                   # Endpoint to check if app is ready to serve traffic
+              port: 8000                # Port used for readiness check
+            initialDelaySeconds: 10     # Wait time before first readiness check
+            periodSeconds: 10           # Interval between readiness checks
+            timeoutSeconds: 2           # Timeout for readiness probe request
+            failureThreshold: 3         # Mark pod unready after 3 consecutive failures
+
+          # ✅ Resource requests & limits
+          resources:
+            requests:
+              cpu: "250m"               # Minimum CPU guaranteed for the container
+              memory: "256Mi"           # Minimum memory guaranteed for the container
+            limits:
+              cpu: "500m"               # Maximum CPU the container can use
+              memory: "512Mi"           # Maximum memory the container can use

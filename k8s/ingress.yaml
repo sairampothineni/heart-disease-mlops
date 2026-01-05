@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1          # Kubernetes API version for Ingress resources
+kind: Ingress                             # Declares this resource as an Ingress
+metadata:
+  name: heart-disease-api-ingress         # Name of the Ingress resource
+spec:
+  ingressClassName: nginx                 # Specifies NGINX as the Ingress controller
+
+  tls:
+    - hosts:
+        - heart-disease.example.com       # Domain name for which TLS/HTTPS is enabled
+      secretName: heart-disease-tls       # Kubernetes Secret containing TLS certificate and key
+
+  rules:
+    - host: heart-disease.example.com     # Hostname for routing incoming HTTP/HTTPS traffic
+      http:
+        paths:
+          - path: /                       # URL path to match incoming requests
+            pathType: Prefix              # Matches all paths starting with "/"
+            backend:
+              service:
+                name: heart-disease-api-service  # Kubernetes Service to forward traffic to
+                port:
+                  number: 80              # Service port receiving the traffic
