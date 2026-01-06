@@ -17,13 +17,13 @@ from sklearn.metrics import (
     f1_score,
     roc_auc_score,
     confusion_matrix,
-    ConfusionMatrixDisplay
+    ConfusionMatrixDisplay,
+    RocCurveDisplay,
 )
 
 # ---------------------------------------------------
-# Paths & MLflow configuration (SAFE at module level)
+# Paths & MLflow configuration (SAFE)
 # ---------------------------------------------------
-
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 
 DATA_PATH = os.path.join(
@@ -31,7 +31,7 @@ DATA_PATH = os.path.join(
     "notebooks",
     "data",
     "processed",
-    "heart_disease_cleaned.csv"
+    "heart_disease_cleaned.csv",
 )
 
 MLRUNS_DIR = os.path.join(BASE_DIR, "mlruns")
@@ -43,7 +43,6 @@ mlflow.set_experiment("Heart Disease Classification")
 # ---------------------------------------------------
 # Main function
 # ---------------------------------------------------
-
 def main():
 
     # ---------------------------------------------------
@@ -68,7 +67,7 @@ def main():
     preprocessor = ColumnTransformer(
         transformers=[
             ("num", StandardScaler(), numerical_features),
-            ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_features)
+            ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_features),
         ]
     )
 
@@ -76,7 +75,11 @@ def main():
     # Train-test split
     # ---------------------------------------------------
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
+        X,
+        y,
+        test_size=0.2,
+        random_state=42,
+        stratify=y,
     )
 
     # ---------------------------------------------------
@@ -89,15 +92,15 @@ def main():
             l1_ratio=0.5,
             C=0.1,
             max_iter=5000,
-            random_state=42
+            random_state=42,
         ),
         "Random Forest": RandomForestClassifier(
             n_estimators=200,
             max_depth=5,
             min_samples_split=5,
             random_state=42,
-            n_jobs=1  # Windows-safe
-        )
+            n_jobs=1,  # CI & Windows safe
+        ),
     }
 
     # ---------------------------------------------------
@@ -110,7 +113,7 @@ def main():
             pipeline = Pipeline(
                 steps=[
                     ("preprocessor", preprocessor),
-                    ("classifier", model)
+                    ("classifier", model),
                 ]
             )
 
@@ -119,38 +122,57 @@ def main():
             y_pred = pipeline.predict(X_test)
             y_proba = pipeline.predict_proba(X_test)[:, 1]
 
+            # -----------------------------
+            # Metrics
+            # -----------------------------
             metrics = {
                 "accuracy": accuracy_score(y_test, y_pred),
                 "precision": precision_score(y_test, y_pred),
                 "recall": recall_score(y_test, y_pred),
                 "f1_score": f1_score(y_test, y_pred),
-                "roc_auc": roc_auc_score(y_test, y_proba)
+                "roc_auc": roc_auc_score(y_test, y_proba),
             }
 
             mlflow.log_metrics(metrics)
             mlflow.log_params(model.get_params())
 
-            # ---------------------------------------------------
-            # Confusion matrix plot
-            # ---------------------------------------------------
+            # -----------------------------
+            # Confusion Matrix Plot
+            # -----------------------------
             cm = confusion_matrix(y_test, y_pred)
-            disp = ConfusionMatrixDisplay(cm)
+            disp_cm = ConfusionMatrixDisplay(cm)
 
-            fig, ax = plt.subplots(figsize=(5, 5))
-            disp.plot(ax=ax)
-            plt.title(model_name)
+            fig_cm, ax_cm = plt.subplots(figsize=(5, 5))
+            disp_cm.plot(ax=ax_cm)
+            plt.title(f"{model_name} – Confusion Matrix")
 
             cm_path = f"confusion_matrix_{model_name.replace(' ', '_')}.png"
-            plt.savefig(cm_path)
+            plt.savefig(cm_path, bbox_inches="tight")
             mlflow.log_artifact(cm_path)
-            plt.close()
+            plt.close(fig_cm)
 
-            # ---------------------------------------------------
-            # Log model (no warning)
-            # ---------------------------------------------------
+            # -----------------------------
+            # ROC Curve Plot (NEW)
+            # -----------------------------
+            fig_roc, ax_roc = plt.subplots(figsize=(5, 5))
+            RocCurveDisplay.from_predictions(
+                y_test,
+                y_proba,
+                ax=ax_roc,
+            )
+            plt.title(f"{model_name} – ROC Curve")
+
+            roc_path = f"roc_curve_{model_name.replace(' ', '_')}.png"
+            plt.savefig(roc_path, bbox_inches="tight")
+            mlflow.log_artifact(roc_path)
+            plt.close(fig_roc)
+
+            # -----------------------------
+            # Log Model
+            # -----------------------------
             mlflow.sklearn.log_model(
                 sk_model=pipeline,
-                name="model"
+                artifact_path="model",
             )
 
             print(f"\n{model_name} logged successfully")
@@ -158,7 +180,7 @@ def main():
 
 
 # ---------------------------------------------------
-# Entry point (CRITICAL FIX)
+# Entry point
 # ---------------------------------------------------
 if __name__ == "__main__":
     main()
